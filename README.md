@@ -49,3 +49,8 @@ The main script includes the following SLURM resource allocation settings:
 ### Usage
 
 The pipeline is launched using the `run_vcfharmonizer.sh` script.
+
+**Example:**
+```bash
+sbatch run_vcfharmonizer.sh -i 1kg_subset.allchr.vcf.gz -o test_file -r ref_hg19/human_g1k_v37.fasta
+```
