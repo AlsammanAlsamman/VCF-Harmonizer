@@ -136,6 +136,12 @@ if [ -z "${INPUT_VCF}" ] || [ -z "${FINAL_OUTPUT_VCF}" ]; then
   usage
 fi
 
+# Generate report file name based on input VCF
+INPUT_BASENAME=$(basename "${INPUT_VCF}")
+INPUT_BASENAME_NO_EXT="${INPUT_BASENAME%.vcf.gz}"
+INPUT_BASENAME_NO_EXT="${INPUT_BASENAME_NO_EXT%.vcf}"
+REPORT_FILE="${INPUT_BASENAME_NO_EXT}.harm.report.txt"
+
 # --- Main Logic ---
 # Load modules
 echo "--- Loading required modules ---"
@@ -208,11 +214,44 @@ sbatch \
   worker_gather.sh "${FINAL_OUTPUT_VCF}" "${TEMP_DIR}" "${CHROM_STYLE}"
 
 echo "--- Pipeline Submitted ---"
+
+# Generate report file
+cat > "${REPORT_FILE}" << EOF
+VCF Harmonization Pipeline Report
+Generated: $(date)
+
+=== INPUT PARAMETERS ===
+Input VCF: ${INPUT_VCF}
+Output VCF: ${FINAL_OUTPUT_VCF}
+Genome Build: ${GENOME_BUILD}
+Chromosome Style: ${CHROM_STYLE}
+EOF
+
 if [ -n "${CUSTOM_REF_FASTA}" ]; then
     echo "Reference: Custom file at ${REF_FASTA_PATH}"
+    echo "Reference: Custom file at ${REF_FASTA_PATH}" >> "${REPORT_FILE}"
 else
     echo "Reference: Build ${GENOME_BUILD}"
+    echo "Reference: Build ${GENOME_BUILD}" >> "${REPORT_FILE}"
 fi
+
+cat >> "${REPORT_FILE}" << EOF
+
+=== JOB INFORMATION ===
+Scatter Job ID: ${scatter_job_id}
+Gather Job ID: ${gather_job_id}
+Temporary Directory: ${TEMP_DIR}
+
+=== MONITORING ===
+Monitor jobs with: squeue -u \$USER
+Check logs in: gwas_log/ directory
+
+=== OUTPUT ===
+Final harmonized VCF: ${FINAL_OUTPUT_VCF}
+Report file: ${REPORT_FILE}
+EOF
+
 echo "Output Chromosome Style: ${CHROM_STYLE}"
 echo "Monitor jobs with 'squeue -u \$USER'"
 echo "Final output will be at: ${FINAL_OUTPUT_VCF}"
+echo "Report written to: ${REPORT_FILE}"
