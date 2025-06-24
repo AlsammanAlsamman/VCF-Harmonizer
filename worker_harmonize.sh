@@ -41,19 +41,22 @@ echo "Running strand-flip aware harmonization pipeline..."
 
 # Step 1: Extract chromosome and fix reference alleles (handles strand flips)
 echo "Step 1: Extracting chromosome ${CHROM} and fixing reference alleles..."
+
+# First run: Get stats to see what we're dealing with
+echo "Running fixref stats analysis..."
 bcftools view -r ${CHROM_QUERY} --threads ${SLURM_CPUS_PER_TASK:-1} ${INPUT_VCF} | \
-  bcftools +fixref -- -f ${REF_FASTA} -m flip -u ${TEMP_DIR}/${CHROM}_unresolved.vcf 2> ${TEMP_DIR}/${CHROM}_fixref.log | \
+  bcftools +fixref -- -f ${REF_FASTA} -m stats > ${TEMP_DIR}/${CHROM}_fixref_stats.log 2>&1
+
+# Second run: Apply fixes, discarding unresolvable variants
+echo "Applying fixref corrections..."
+bcftools view -r ${CHROM_QUERY} --threads ${SLURM_CPUS_PER_TASK:-1} ${INPUT_VCF} | \
+  bcftools +fixref -- -f ${REF_FASTA} -m flip -d 2> ${TEMP_DIR}/${CHROM}_fixref.log | \
   bcftools view -O z -o ${TEMP_DIR}/${CHROM}_fixed.vcf.gz
 
 # Index the fixed file
 tabix -p vcf ${TEMP_DIR}/${CHROM}_fixed.vcf.gz
 
-# Compress unresolved variants file if it exists
-if [ -f "${TEMP_DIR}/${CHROM}_unresolved.vcf" ] && [ -s "${TEMP_DIR}/${CHROM}_unresolved.vcf" ]; then
-    bgzip ${TEMP_DIR}/${CHROM}_unresolved.vcf
-    tabix -p vcf ${TEMP_DIR}/${CHROM}_unresolved.vcf.gz
-    echo "Unresolved variants saved to: ${TEMP_DIR}/${CHROM}_unresolved.vcf.gz"
-fi
+echo "Fixref processing completed."
 
 # Step 2: Normalize and finalize (with more permissive settings for remaining issues)
 echo "Step 2: Normalizing and finalizing chromosome ${CHROM}..."
@@ -68,40 +71,41 @@ rm -f ${TEMP_DIR}/${CHROM}_fixed.vcf.gz ${TEMP_DIR}/${CHROM}_fixed.vcf.gz.tbi
 echo "Strand-flip aware harmonization completed."
 
 # Report fixref results
-if [ -f "${TEMP_DIR}/${CHROM}_fixref.log" ] && [ -s "${TEMP_DIR}/${CHROM}_fixref.log" ]; then
-    echo "=== FIXREF SUMMARY FOR CHROMOSOME ${CHROM} ==="
-    
-    # Extract key statistics
-    total_vars=$(grep "^NS.*total" "${TEMP_DIR}/${CHROM}_fixref.log" | awk '{print $3}')
-    ref_match=$(grep "^NS.*ref match" "${TEMP_DIR}/${CHROM}_fixref.log" | awk '{print $3}')
-    swapped=$(grep "^NS.*swapped" "${TEMP_DIR}/${CHROM}_fixref.log" | awk '{print $3}')
-    flipped=$(grep "^NS.*flipped" "${TEMP_DIR}/${CHROM}_fixref.log" | awk '{print $3}')
-    unresolved=$(grep "^NS.*unresolved" "${TEMP_DIR}/${CHROM}_fixref.log" | awk '{print $3}')
-    
-    echo "Total variants: ${total_vars}"
-    echo "Reference match: ${ref_match} ($(grep "^NS.*ref match" "${TEMP_DIR}/${CHROM}_fixref.log" | awk '{print $4}'))"
-    echo "Swapped REF/ALT: ${swapped} ($(grep "^NS.*swapped" "${TEMP_DIR}/${CHROM}_fixref.log" | awk '{print $4}'))"
-    echo "Strand flipped: ${flipped} ($(grep "^NS.*flipped" "${TEMP_DIR}/${CHROM}_fixref.log" | awk '{print $4}'))"
-    echo "Unresolved: ${unresolved} ($(grep "^NS.*unresolved" "${TEMP_DIR}/${CHROM}_fixref.log" | awk '{print $4}'))"
-    
-    # Show full log for detailed analysis
+echo "=== FIXREF ANALYSIS FOR CHROMOSOME ${CHROM} ==="
+
+# Show the stats analysis first
+if [ -f "${TEMP_DIR}/${CHROM}_fixref_stats.log" ] && [ -s "${TEMP_DIR}/${CHROM}_fixref_stats.log" ]; then
+    echo "=== ORIGINAL VARIANT ANALYSIS ==="
+    cat "${TEMP_DIR}/${CHROM}_fixref_stats.log"
     echo ""
-    echo "=== COMPLETE FIXREF LOG ==="
-    cat "${TEMP_DIR}/${CHROM}_fixref.log"
-    echo "=== END FIXREF LOG ==="
-    
-    # Report on unresolved variants if they exist
-    if [ -f "${TEMP_DIR}/${CHROM}_unresolved.vcf.gz" ]; then
-        unresolved_count=$(bcftools view -H "${TEMP_DIR}/${CHROM}_unresolved.vcf.gz" | wc -l)
-        echo ""
-        echo "=== UNRESOLVED VARIANTS ==="
-        echo "Count: ${unresolved_count}"
-        echo "File: ${TEMP_DIR}/${CHROM}_unresolved.vcf.gz"
-        echo "Sample of unresolved variants:"
-        bcftools view -H "${TEMP_DIR}/${CHROM}_unresolved.vcf.gz" | head -5 | cut -f1-5
-        echo "=== END UNRESOLVED ==="
-    fi
 fi
+
+# Calculate before/after counts
+if [ -f "${TEMP_DIR}/${CHROM}_fixed.vcf.gz" ]; then
+    original_count=$(bcftools view -r ${CHROM_QUERY} -H ${INPUT_VCF} | wc -l)
+    fixed_count=$(bcftools view -H ${TEMP_DIR}/${CHROM}_fixed.vcf.gz | wc -l)
+    discarded_count=$((original_count - fixed_count))
+    
+    echo "=== FIXREF RESULTS SUMMARY ==="
+    echo "Original variants: ${original_count}"
+    echo "Successfully processed: ${fixed_count}"
+    echo "Discarded (unresolvable): ${discarded_count}"
+    
+    if [ ${original_count} -gt 0 ]; then
+        discard_percent=$(echo "scale=1; ${discarded_count} * 100 / ${original_count}" | bc -l 2>/dev/null || echo "N/A")
+        echo "Discard rate: ${discard_percent}%"
+    fi
+    echo ""
+fi
+
+# Show any error messages
+if [ -f "${TEMP_DIR}/${CHROM}_fixref.log" ] && [ -s "${TEMP_DIR}/${CHROM}_fixref.log" ]; then
+    echo "=== FIXREF PROCESSING LOG ==="
+    cat "${TEMP_DIR}/${CHROM}_fixref.log"
+    echo ""
+fi
+
+echo "=== END FIXREF ANALYSIS ==="
 
 # --- FINAL CHECK AND REPORTING ---
 if [ -s "${TEMP_VCF_OUT_GZ}" ]; then
